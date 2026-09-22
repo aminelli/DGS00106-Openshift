@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: rhel-10-ssh-srv
+  namespace: unipol-vm
+spec:
+  selector:
+    kubevirt.io/vm: test-rhel-10
+  ports:
+    - name: ssh
+      port: 22
+      targetPort: 22
+  type: ClusterIP
