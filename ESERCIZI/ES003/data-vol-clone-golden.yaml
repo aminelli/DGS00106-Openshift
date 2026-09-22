@@ -1,0 +1,14 @@
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata:
+  name: rhel-10-goldendisk-dv
+  namespace: unipol-vm
+spec:
+  source:
+    pvc:
+      namespace: unipol-vm
+      name: test-rhel-10-dv
+  storage:
+    resources:
+      requests:
+        storage: 70Gi  

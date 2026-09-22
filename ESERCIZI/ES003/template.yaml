@@ -1,0 +1,71 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: rhel-10-template
+  namespace: unipol-vm
+  annotations:
+    description: "Template Rhel 10"
+  labels:
+    template.kubevirt.io/type: vm
+    template.unipol.it/caffe: nero
+objects:
+  - apiVersion: kubevirt.io/v1
+    kind: VirtualMachine
+    metadata:
+      name: ${NAME}
+      labels:
+        vm.kubevirt.io/template: rhel-10-template
+    spec:
+      running: false
+      dataVolumeTemplates:
+        - metadata:
+            name: ${NAME}-rootdisk
+          spec:
+            sourceRef:
+              kind: DataSource
+              name: rhel-10-golden-ds
+              namespace: unipol-vm
+            storage:
+              resources:  
+                requests:
+                  storage: ${DISK_SIZE}
+      template:
+        metadata:
+          labels:
+            kubevirt.io/domain: ${NAME}
+        spec:
+          domain:
+            cpu:
+              cores: ${{CPU_CORES}}
+            resources:
+              requests:
+                memory: ${MEM_SIZE}
+            devices:
+              disks:
+                - name: rootdisk
+                  disk:
+                    bus: virtio
+              interfaces:
+                - name: default
+                  masquerade: {}
+              rng: {}
+          networks:
+            - name: default
+              pod: {}
+          volumes:
+            - name: rootdisk
+              dataVolume:
+                name: ${NAME}-rootdisk
+parameters:
+  - name: NAME
+    description: "Nome della VM"
+    required: true
+  - name: CPU_CORES
+    description: "Numero di Core per CPU"
+    value: "2"
+  - name: MEM_SIZE
+    description: "RAM da Assegnare"
+    value: "4Gi"
+  - name: DISK_SIZE
+    description: "Dimesione Disco "
+    value: "80Gi"
