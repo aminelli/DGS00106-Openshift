@@ -2,7 +2,7 @@ apiVersion: kubevirt.io/v1
 kind: VirtualMachine
 metadata:
   name: win2022-test
-  namespace: nms-vm-iso
+  namespace: test-corso
   labels:
     app: win2022-test
     version: v1
@@ -28,12 +28,6 @@ spec:
           bootloader:
             efi:
               secureBoot: true
-        features:
-          smm:
-            enabled: true
-          acpi: {}
-          spinlocks:
-            spinlocks: 4096
         devices:
           tpm: {}
           disks:
@@ -52,11 +46,7 @@ spec:
           interfaces:
             - name: default
               model: virtio
-              masquerade: {}
-          inputs:
-            - type: tablet
-              bus: usb
-              name: tablet
+              masquerade: {}          
       networks:
         - name: default
           pod: {}

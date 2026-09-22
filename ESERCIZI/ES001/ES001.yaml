@@ -1,14 +1,14 @@
 apiVersion: kubevirt.io/v1
 kind: VirtualMachine
 metadata:
-  name: fedora-test
+  name: cirros-test
   namespace: test
 spec:
   running: true
   template:
     metadata:
       labels:
-        kubevirt.io/domain: fedora-test
+        kubevirt.io/domain: cirros-test
         # kubevirt.io/domain: test-vm
     spec:
       domain:
