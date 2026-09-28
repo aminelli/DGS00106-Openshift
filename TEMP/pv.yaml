@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-postgres
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce        # Un solo nodo può scrivere
+  persistentVolumeReclaimPolicy: Retain   # Non cancellare i dati dopo l'uso
+  storageClassName: standard
+  hostPath:
+    path: /mnt/dati/postgres 
