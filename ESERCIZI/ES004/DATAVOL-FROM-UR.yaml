@@ -1,13 +1,13 @@
 apiVersion: cdi.kubevirt.io/v1beta1
 kind: DataVolume
 metadata:
-    name: debian-golden-trixie
-    namespace: corso
+  name: debian-golden-trixie
+  namespace: corso
 spec:
-    source:
-        http:
-        url: https://cloud.debian.org/cdimage/cloud/trixie/20260914-2601/debian-13-nocloud-amd64-20260914-2601.qcow2
-    storage:
-        resources:
-            requests:
-                storage: 1Gi
+  source:
+    http:
+      url: https://cloud.debian.org/cdimage/cloud/trixie/20260914-2601/debian-13-nocloud-amd64-20260914-2601.qcow2
+  storage:
+    resources:
+      requests:
+        storage: 1Gi

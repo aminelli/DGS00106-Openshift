@@ -20,6 +20,11 @@ spec:
   template:
     spec:
       domain:
+        cpu:
+          cores: 2
+        resources:
+          requests:
+            memory: 4Gi
         devices:
           disks:
             - name: rootdisk
