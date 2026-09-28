@@ -107,6 +107,7 @@ spec:
                 - curl
                 - vim
                 - htop
+                - nano
                 - net-tools
 
               write_files:
