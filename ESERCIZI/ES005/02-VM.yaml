@@ -1,0 +1,59 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: debian13-vm
+  namespace: corso
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        kubevirt.io/domain: debian13-vm
+    spec:
+      domain:
+        cpu:
+          cores: 2
+        memory:
+          guest: 2Gi
+        devices:
+          disks:
+            - name: rootdisk
+              bootOrder: 1
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+          interfaces:
+            - name: default
+              masquerade: {}
+              model: virtio
+          rng: {}
+        resources:
+          requests:
+            memory: 2Gi
+      networks:
+        - name: default
+          pod: {}
+      terminationGracePeriodSeconds: 60
+      volumes:
+        - name: rootdisk
+          dataVolume:
+            name: debian13-dv
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            userData: |
+              #cloud-config
+              ssh_pwauth: true
+              users:
+                - name: debian
+                  groups: [sudo]
+                  shell: /bin/bash
+                  sudo: "ALL=(ALL) NOPASSWD:ALL"
+                  lock_passwd: false
+              chpasswd:
+                expire: false
+                users:
+                  - name: debian
+                    password: changeme
+                    type: text

@@ -1,0 +1,123 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: debian13-cloud-vm
+  namespace: corso
+  labels:
+    app: debian13-cloud-vm
+spec:
+  runStrategy: Always
+
+  # ---------------------------------------------------------------
+  # DataVolume incorporato: viene creato insieme alla VM
+  # ---------------------------------------------------------------
+  dataVolumeTemplates:
+    - apiVersion: cdi.kubevirt.io/v1beta1
+      kind: DataVolume
+      metadata:
+        name: debian13-cloud-vm-root      # deve coincidere con volumes[].dataVolume.name
+      spec:
+        source:
+          pvc:
+            name: debian13-dv
+            namespace: corso
+        storage:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 10Gi
+          storageClassName: crc-csi-hostpath-provisioner
+          volumeMode: Filesystem
+
+  # ---------------------------------------------------------------
+  # Template della VirtualMachineInstance
+  # ---------------------------------------------------------------
+  template:
+    metadata:
+      labels:
+        kubevirt.io/domain: debian13-cloud-vm
+        app: debian13-cloud-vm
+    spec:
+      domain:
+        cpu:
+          cores: 2
+        memory:
+          guest: 2Gi
+        resources:
+          requests:
+            memory: 2Gi
+        devices:
+          disks:
+            - name: rootdisk
+              bootOrder: 1
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+          interfaces:
+            - name: default
+              masquerade: {}
+              model: virtio
+          rng: {}
+          autoattachGraphicsDevice: true
+      networks:
+        - name: default
+          pod: {}
+      terminationGracePeriodSeconds: 60
+      volumes:
+        - name: rootdisk
+          dataVolume:
+            name: debian13-cloud-vm-root
+
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            userData: |
+              #cloud-config
+              hostname: debian13-cloud
+              fqdn: debian13-cloud.corso.local
+              manage_etc_hosts: true
+              timezone: Europe/Rome
+              locale: it_IT.UTF-8
+
+              users:
+                - name: debian
+                  gecos: Utente Debian
+                  groups: [sudo]
+                  shell: /bin/bash
+                  sudo: "ALL=(ALL) NOPASSWD:ALL"
+                  lock_passwd: false
+                  ssh_authorized_keys:
+                    - ssh-ed25519 AAAAC3Nza...INSERISCI_LA_TUA_CHIAVE_PUBBLICA... utente@host
+
+              ssh_pwauth: true
+              chpasswd:
+                expire: false
+                users:
+                  - name: debian
+                    password: "Corso2026!"
+                    type: text
+
+              package_update: true
+              package_upgrade: false
+              packages:
+                - qemu-guest-agent
+                - openssh-server
+                - curl
+                - vim
+                - htop
+                - net-tools
+
+              write_files:
+                - path: /etc/motd
+                  permissions: "0644"
+                  content: |
+                    VM Debian 13 su OpenShift Virtualization - namespace corso
+
+              runcmd:
+                - systemctl enable --now qemu-guest-agent
+                - systemctl enable --now ssh
+                - echo "cloud-init completato il $(date)" >> /var/log/cloud-init-custom.log
+
+              final_message: "cloud-init terminato dopo $UPTIME secondi"

@@ -1,0 +1,21 @@
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata:
+  name: debian13-dv
+  namespace: corso
+  annotations:
+    # Con WaitForFirstConsumer l'import parte subito, senza attendere la VM
+    cdi.kubevirt.io/storage.bind.immediate.requested: "true"
+spec:
+  source:
+    http:
+    # url: "https://cloud.debian.org/cdimage/cloud/trixie/20260914-2601/debian-13-nocloud-amd64-20260914-2601.qcow2"
+      url: "https://cloud.debian.org/cdimage/cloud/trixie/20260914-2601/debian-13-genericcloud-amd64-20260914-2601.qcow2"
+  storage:
+    accessModes:
+      - ReadWriteOnce
+    resources:
+      requests:
+        storage: 10Gi
+    storageClassName: crc-csi-hostpath-provisioner
+    volumeMode: Filesystem
