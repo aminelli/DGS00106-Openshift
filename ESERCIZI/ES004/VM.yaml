@@ -1,0 +1,31 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: my-vm
+  namespace: corso
+spec:
+  running: true
+  dataVolumeTemplates:
+    - metadata:
+        name: my-vm-disk
+      spec:
+        source:
+          pvc:
+            name: debian-golden-trixie
+            namespace: corso
+        storage:
+          resources:
+            requests:
+              storage: 2Gi
+  template:
+    spec:
+      domain:
+        devices:
+          disks:
+            - name: rootdisk
+              disk:
+                bus: virtio
+      volumes:
+        - name: rootdisk
+          dataVolume:
+            name: my-vm-disk
