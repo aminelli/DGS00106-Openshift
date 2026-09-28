@@ -1,0 +1,10 @@
+apiVersion: snapshot.kubevirt.io/v1beta1
+kind: VirtualMachineSnapshot
+metadata:
+  name: debian13-snap1
+  namespace: corso
+spec:
+  source:
+    apiGroup: kubevirt.io
+    kind: VirtualMachine
+    name: debian13-vm
