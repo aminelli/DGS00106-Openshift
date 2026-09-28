@@ -1,0 +1,68 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: my-vm
+  namespace: antonio-minelli-etlf-dev
+spec:
+  dataVolumeTemplates:
+    - metadata:
+        creationTimestamp: null
+        name: my-vm-disk
+      spec:
+        source:
+          pvc:
+            name: debian-golden-trixie
+            namespace: antonio-minelli-etlf-dev
+        storage:
+          resources:
+            requests:
+              storage: 2Gi
+  runStrategy: Manual
+  template:
+    metadata:
+      annotations:
+        kubevirt.io/pci-topology-version: v3
+      creationTimestamp: null
+    spec:
+      architecture: amd64
+      domain:
+        cpu:
+          cores: 2
+        devices:
+          disks:
+            - disk:
+                bus: virtio
+              name: rootdisk
+            - disk:
+                bus: virtio
+              name: cloudinitdisk
+        firmware:
+          serial: f39e1d6f-fb99-448f-8ff3-50222def389e
+          uuid: 721e53b1-585f-4f3b-a028-36f50abfacc6
+        machine:
+          type: pc-q35-rhel9.6.0
+        resources:
+          limits:
+            memory: 4Gi
+          requests:
+            memory: 4Gi
+      tolerations:
+        - effect: NoSchedule
+          key: sandbox-cnv
+          operator: Exists
+      volumes:
+        - dataVolume:
+            name: my-vm-disk
+          name: rootdisk
+        - cloudInitNoCloud:
+            userData: |
+              #cloud-config
+              chpasswd:
+                expire: false
+              password: redhat
+              ssh_authorized_keys:
+              - |
+                ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDWLVjB2r2pRquMPtmI/8brPq9vwc8/PJzih1/Alnbkmhv60W0EuB5adWPktX8MHsKZnaClNGrYqj18P3beD6j66RmiJkuppl0TACDb6PqfuN/E0SSbuHw8xPZLp50XKj71AITW34h9JeoX8NDVVS0d1Y3+ySXO4ITAhxWAIROCafV8CQvJEPy72/IcdLj21PVznLxb2uR82LrI06acHM+0psIf98ZqTi4u2to0P4XIYLbWZdkjS2o4dim/9YV11GrR09YfnTNPhjhtOt+e/s5ZbvE/KahFriKuwXUaII7x0NvcMSmj7dgGu3HxLNe1mZrdmTQNmfZ6UcvT+AniCShXOdHRckeK6oLvkdx1J0qUA0a0Ze0VkKSa4f1uC+I5Svs3jqFqmy2Uu8REVaajAOyyLj8Y2wacZwdlaINwPM1u5ewFezhIp1L+xzGiMEZYkGBywmldoJyTa/mBTWxt4pBDqitiGrWPjckFNBGk14ebG7AwFh5KiG0impvZxPkbMFE= sandbox@cnv
+              user: developer
+          name: cloudinitdisk
+
