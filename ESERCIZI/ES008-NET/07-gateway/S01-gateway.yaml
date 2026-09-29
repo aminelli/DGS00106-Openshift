@@ -1,0 +1,145 @@
+# ====================================================================
+# G (1/2) - VM gateway: uplink su pod network, LAN privata su UDN secondaria
+#
+# Passo 1 di 2: crea rete privata e VM gateway. Attendi che gw sia Running e configurata (cloud-init finito).
+# gw: wan0 = pod network (masquerade, DHCP), lan0 = rete privata 10.60.0.1/24. Fa NAT, DNS (dnsmasq) e DNAT porta 80 -> web (10.60.0.11).
+# Login: debian / cambiami. Funziona su CRC. Non aprire la 2/2 prima che gw abbia finito (le altre VM installano pacchetti via gw).
+#
+# Apply   : oc apply -f G-1-gateway.yaml
+# Attesa  : virtctl console gw -n corso   poi   cloud-init status --wait ; sudo nft list ruleset
+# Cleanup : oc delete -f G-2-stack-privata.yaml ; oc delete -f G-1-gateway.yaml
+# ====================================================================
+---
+apiVersion: k8s.ovn.org/v1
+kind: UserDefinedNetwork
+metadata:
+  name: private
+  namespace: corso
+spec:
+  topology: Layer2
+  layer2:
+    role: Secondary
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gw
+  namespace: corso
+spec:
+  selector:
+    tier: gw
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: gw
+  namespace: corso
+spec:
+  to:
+    kind: Service
+    name: gw
+  port:
+    targetPort: http
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: gw
+  namespace: corso
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: stack-demo
+        tier: gw
+    spec:
+      domain:
+        cpu:
+          cores: 1
+        resources:
+          requests:
+            memory: 1Gi
+        devices:
+          disks:
+          - name: rootdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: default
+            masquerade: {}
+            model: virtio
+            macAddress: "02:00:00:07:00:01"
+          - name: private
+            bridge: {}
+            model: virtio
+            macAddress: "02:00:00:07:00:02"
+      networks:
+      - name: default
+        pod: {}
+      - name: private
+        multus:
+          networkName: private
+      volumes:
+      - name: rootdisk
+        containerDisk:
+          image: quay.io/containerdisks/debian:13
+          imagePullPolicy: IfNotPresent
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            hostname: gw
+            password: cambiami
+            chpasswd: {expire: false}
+            ssh_pwauth: true
+            packages:
+            - nftables
+            - dnsmasq
+            write_files:
+            - path: /etc/sysctl.d/99-forward.conf
+              content: |
+                net.ipv4.ip_forward = 1
+            - path: /etc/stack-nft.conf
+              content: |
+                flush ruleset
+                table ip nat {
+                  chain prerouting {
+                    type nat hook prerouting priority -100;
+                    iifname "wan0" tcp dport 80 dnat to 10.60.0.11:80
+                  }
+                  chain postrouting {
+                    type nat hook postrouting priority 100;
+                    oifname "wan0" masquerade
+                  }
+                }
+            - path: /etc/dnsmasq.d/lan.conf
+              content: |
+                interface=lan0
+                bind-interfaces
+                resolv-file=/run/systemd/resolve/resolv.conf
+            runcmd:
+            - sysctl --system
+            - cp /etc/stack-nft.conf /etc/nftables.conf
+            - systemctl enable --now nftables
+            - systemctl restart dnsmasq
+          networkData: |
+            version: 2
+            ethernets:
+              wan0:
+                match:
+                  macaddress: "02:00:00:07:00:01"
+                set-name: wan0
+                dhcp4: true
+              lan0:
+                match:
+                  macaddress: "02:00:00:07:00:02"
+                set-name: lan0
+                addresses: [10.60.0.1/24]

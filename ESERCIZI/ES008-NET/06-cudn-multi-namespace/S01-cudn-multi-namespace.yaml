@@ -1,0 +1,390 @@
+# ====================================================================
+# F - Stack su piu' namespace con ClusterUserDefinedNetwork primaria Layer2
+#
+# Login nelle VM: utente debian / password cambiami (cambiala).
+# Disco: containerDisk quay.io/containerdisks/debian:13 (effimero: ad ogni stop/restart la VM riparte da immagine pulita e cloud-init riesegue).
+# Applica una sola alternativa alla volta: sono pensate per lo stesso lab e riusano gli stessi nomi (web, app, db).
+# web, app, db in namespace diversi (stack-web, stack-app, stack-db) sulla STESSA rete L2 10.110.0.0/24.
+# I namespace nascono con entrambe le label (rete-cudn e primary-user-defined-network) prima dei pod.
+# Funziona su CRC (serve cluster-admin).
+#
+# Nomi DNS dei peer non garantiti su UDN primaria (dipende dalla release). Verifica: getent hosts app
+# Se non risolve, leggi gli IP con 'oc get vmi -n <ns> -o wide' e nelle VM esegui:
+#   sudo set-peer.sh app <IP-app>   (su web)   |   sudo set-peer.sh db <IP-db>   (su app)
+#
+# Apply   : oc apply -f F-cudn-multi-namespace.yaml
+# Verifica: oc get clusteruserdefinednetwork rete-stack -o yaml ; oc get vmi -A -o wide | grep stack-
+# Cleanup : oc delete -f F-cudn-multi-namespace.yaml
+# ====================================================================
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: stack-web
+  labels:
+    k8s.ovn.org/primary-user-defined-network: ""
+    rete-cudn: "stack-f"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: stack-app
+  labels:
+    k8s.ovn.org/primary-user-defined-network: ""
+    rete-cudn: "stack-f"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: stack-db
+  labels:
+    k8s.ovn.org/primary-user-defined-network: ""
+    rete-cudn: "stack-f"
+---
+apiVersion: k8s.ovn.org/v1
+kind: ClusterUserDefinedNetwork
+metadata:
+  name: rete-stack
+spec:
+  namespaceSelector:
+    matchLabels:
+      rete-cudn: stack-f
+  network:
+    topology: Layer2
+    layer2:
+      role: Primary
+      subnets: ["10.110.0.0/24"]
+      ipam:
+        lifecycle: Persistent
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: stack-web
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-web
+  namespace: stack-web
+spec:
+  podSelector:
+    matchLabels:
+      tier: web
+  policyTypes: [Ingress]
+  ingress:
+  - ports:
+    - protocol: TCP
+      port: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: stack-app
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-app-from-web
+  namespace: stack-app
+spec:
+  podSelector:
+    matchLabels:
+      tier: app
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: stack-web
+      podSelector:
+        matchLabels:
+          tier: web
+    ports:
+    - protocol: TCP
+      port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: stack-db
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-db-from-app
+  namespace: stack-db
+spec:
+  podSelector:
+    matchLabels:
+      tier: db
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: stack-app
+      podSelector:
+        matchLabels:
+          tier: app
+    ports:
+    - protocol: TCP
+      port: 5432
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: web
+  namespace: stack-web
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: stack-demo
+        tier: web
+    spec:
+      domain:
+        cpu:
+          cores: 1
+        resources:
+          requests:
+            memory: 1Gi
+        devices:
+          disks:
+          - name: rootdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: podnet
+            binding:
+              name: l2bridge
+      networks:
+      - name: podnet
+        pod: {}
+      volumes:
+      - name: rootdisk
+        containerDisk:
+          image: quay.io/containerdisks/debian:13
+          imagePullPolicy: IfNotPresent
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            hostname: web
+            password: cambiami
+            chpasswd: {expire: false}
+            ssh_pwauth: true
+            packages:
+            - nginx
+            write_files:
+            - path: /etc/nginx/conf.d/stack.conf
+              content: |
+                server {
+                  listen 80 default_server;
+                  location / {
+                    proxy_pass http://app:8080;
+                  }
+                }
+            - path: /usr/local/bin/set-peer.sh
+              permissions: '0755'
+              content: |
+                #!/bin/sh
+                # uso: set-peer.sh <nome> <ip>   (es. set-peer.sh app 10.100.0.12)
+                echo "$2 $1" >> /etc/hosts
+                systemctl restart nginx app 2>/dev/null || true
+            runcmd:
+            - rm -f /etc/nginx/sites-enabled/default
+            - systemctl restart nginx || true
+          networkData: |
+            version: 2
+            ethernets:
+              lan0:
+                match:
+                  name: "en*"
+                dhcp4: true
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: app
+  namespace: stack-app
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: stack-demo
+        tier: app
+    spec:
+      domain:
+        cpu:
+          cores: 1
+        resources:
+          requests:
+            memory: 1Gi
+        devices:
+          disks:
+          - name: rootdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: podnet
+            binding:
+              name: l2bridge
+      networks:
+      - name: podnet
+        pod: {}
+      volumes:
+      - name: rootdisk
+        containerDisk:
+          image: quay.io/containerdisks/debian:13
+          imagePullPolicy: IfNotPresent
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            hostname: app
+            password: cambiami
+            chpasswd: {expire: false}
+            ssh_pwauth: true
+            write_files:
+            - path: /opt/app.py
+              content: |
+                import socket
+                from http.server import BaseHTTPRequestHandler, HTTPServer
+                DB = "db"
+                class H(BaseHTTPRequestHandler):
+                    def do_GET(self):
+                        try:
+                            socket.create_connection((DB, 5432), 2).close()
+                            st = "OK"
+                        except Exception as e:
+                            st = "KO (%s)" % e
+                        body = ("app=%s -> db=%s : %s\n" % (socket.gethostname(), DB, st)).encode()
+                        self.send_response(200)
+                        self.end_headers()
+                        self.wfile.write(body)
+                HTTPServer(("0.0.0.0", 8080), H).serve_forever()
+            - path: /etc/systemd/system/app.service
+              content: |
+                [Unit]
+                Description=Stack demo app
+                After=network-online.target
+                Wants=network-online.target
+                [Service]
+                ExecStart=/usr/bin/python3 /opt/app.py
+                Restart=always
+                [Install]
+                WantedBy=multi-user.target
+            - path: /usr/local/bin/set-peer.sh
+              permissions: '0755'
+              content: |
+                #!/bin/sh
+                # uso: set-peer.sh <nome> <ip>   (es. set-peer.sh app 10.100.0.12)
+                echo "$2 $1" >> /etc/hosts
+                systemctl restart nginx app 2>/dev/null || true
+            runcmd:
+            - systemctl daemon-reload
+            - systemctl enable --now app.service
+          networkData: |
+            version: 2
+            ethernets:
+              lan0:
+                match:
+                  name: "en*"
+                dhcp4: true
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: db
+  namespace: stack-db
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: stack-demo
+        tier: db
+    spec:
+      domain:
+        cpu:
+          cores: 1
+        resources:
+          requests:
+            memory: 1Gi
+        devices:
+          disks:
+          - name: rootdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: podnet
+            binding:
+              name: l2bridge
+      networks:
+      - name: podnet
+        pod: {}
+      volumes:
+      - name: rootdisk
+        containerDisk:
+          image: quay.io/containerdisks/debian:13
+          imagePullPolicy: IfNotPresent
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            hostname: db
+            password: cambiami
+            chpasswd: {expire: false}
+            ssh_pwauth: true
+            packages:
+            - postgresql
+            write_files:
+            - path: /usr/local/bin/db-setup.sh
+              permissions: '0755'
+              content: |
+                #!/bin/sh
+                D=$(ls -d /etc/postgresql/*/main | head -1)
+                echo "listen_addresses = '*'" > $D/conf.d/listen.conf
+                echo "host all all 0.0.0.0/0 scram-sha-256" >> $D/pg_hba.conf
+                su postgres -c "psql -c \"ALTER USER postgres PASSWORD 'cambiami'\""
+                systemctl restart postgresql
+            - path: /usr/local/bin/set-peer.sh
+              permissions: '0755'
+              content: |
+                #!/bin/sh
+                # uso: set-peer.sh <nome> <ip>   (es. set-peer.sh app 10.100.0.12)
+                echo "$2 $1" >> /etc/hosts
+                systemctl restart nginx app 2>/dev/null || true
+            runcmd:
+            - /usr/local/bin/db-setup.sh
+          networkData: |
+            version: 2
+            ethernets:
+              lan0:
+                match:
+                  name: "en*"
+                dhcp4: true

@@ -1,0 +1,264 @@
+# ====================================================================
+# G (2/2) - web, app, db solo sulla rete privata dietro la VM gateway
+#
+# Passo 2 di 2 (dopo G-1-gateway.yaml): le VM non hanno pod network, gateway e DNS = gw (10.60.0.1).
+# IP: web 10.60.0.11 | app 10.60.0.12 | db 10.60.0.13. Esposizione: Route 'gw' -> gw:80 -> DNAT -> web.
+# Test interno: nella console di web  curl -s localhost
+# Test esterno: curl http://$(oc get route gw -n corso -o jsonpath='{.spec.host}')
+# Attenzione: gw e' un single point of failure (HA con VRRP richiede L2 compatibile).
+#
+# Apply   : oc apply -f G-2-stack-privata.yaml
+# Cleanup : oc delete -f G-2-stack-privata.yaml
+# ====================================================================
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: web
+  namespace: corso
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: stack-demo
+        tier: web
+    spec:
+      domain:
+        cpu:
+          cores: 1
+        resources:
+          requests:
+            memory: 1Gi
+        devices:
+          autoattachPodInterface: false
+          disks:
+          - name: rootdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: private
+            bridge: {}
+            model: virtio
+            macAddress: "02:00:00:07:01:01"
+      networks:
+      - name: private
+        multus:
+          networkName: private
+      volumes:
+      - name: rootdisk
+        containerDisk:
+          image: quay.io/containerdisks/debian:13
+          imagePullPolicy: IfNotPresent
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            hostname: web
+            password: cambiami
+            chpasswd: {expire: false}
+            ssh_pwauth: true
+            packages:
+            - nginx
+            write_files:
+            - path: /etc/nginx/conf.d/stack.conf
+              content: |
+                server {
+                  listen 80 default_server;
+                  location / {
+                    proxy_pass http://10.60.0.12:8080;
+                  }
+                }
+            runcmd:
+            - rm -f /etc/nginx/sites-enabled/default
+            - systemctl restart nginx || true
+          networkData: |
+            version: 2
+            ethernets:
+              lan0:
+                match:
+                  macaddress: "02:00:00:07:01:01"
+                set-name: lan0
+                addresses: [10.60.0.11/24]
+                routes:
+                - to: 0.0.0.0/0
+                  via: 10.60.0.1
+                nameservers:
+                  addresses: [10.60.0.1]
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: app
+  namespace: corso
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: stack-demo
+        tier: app
+    spec:
+      domain:
+        cpu:
+          cores: 1
+        resources:
+          requests:
+            memory: 1Gi
+        devices:
+          autoattachPodInterface: false
+          disks:
+          - name: rootdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: private
+            bridge: {}
+            model: virtio
+            macAddress: "02:00:00:07:02:01"
+      networks:
+      - name: private
+        multus:
+          networkName: private
+      volumes:
+      - name: rootdisk
+        containerDisk:
+          image: quay.io/containerdisks/debian:13
+          imagePullPolicy: IfNotPresent
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            hostname: app
+            password: cambiami
+            chpasswd: {expire: false}
+            ssh_pwauth: true
+            write_files:
+            - path: /opt/app.py
+              content: |
+                import socket
+                from http.server import BaseHTTPRequestHandler, HTTPServer
+                DB = "10.60.0.13"
+                class H(BaseHTTPRequestHandler):
+                    def do_GET(self):
+                        try:
+                            socket.create_connection((DB, 5432), 2).close()
+                            st = "OK"
+                        except Exception as e:
+                            st = "KO (%s)" % e
+                        body = ("app=%s -> db=%s : %s\n" % (socket.gethostname(), DB, st)).encode()
+                        self.send_response(200)
+                        self.end_headers()
+                        self.wfile.write(body)
+                HTTPServer(("0.0.0.0", 8080), H).serve_forever()
+            - path: /etc/systemd/system/app.service
+              content: |
+                [Unit]
+                Description=Stack demo app
+                After=network-online.target
+                Wants=network-online.target
+                [Service]
+                ExecStart=/usr/bin/python3 /opt/app.py
+                Restart=always
+                [Install]
+                WantedBy=multi-user.target
+            runcmd:
+            - systemctl daemon-reload
+            - systemctl enable --now app.service
+          networkData: |
+            version: 2
+            ethernets:
+              lan0:
+                match:
+                  macaddress: "02:00:00:07:02:01"
+                set-name: lan0
+                addresses: [10.60.0.12/24]
+                routes:
+                - to: 0.0.0.0/0
+                  via: 10.60.0.1
+                nameservers:
+                  addresses: [10.60.0.1]
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: db
+  namespace: corso
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: stack-demo
+        tier: db
+    spec:
+      domain:
+        cpu:
+          cores: 1
+        resources:
+          requests:
+            memory: 1Gi
+        devices:
+          autoattachPodInterface: false
+          disks:
+          - name: rootdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: private
+            bridge: {}
+            model: virtio
+            macAddress: "02:00:00:07:03:01"
+      networks:
+      - name: private
+        multus:
+          networkName: private
+      volumes:
+      - name: rootdisk
+        containerDisk:
+          image: quay.io/containerdisks/debian:13
+          imagePullPolicy: IfNotPresent
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            hostname: db
+            password: cambiami
+            chpasswd: {expire: false}
+            ssh_pwauth: true
+            packages:
+            - postgresql
+            write_files:
+            - path: /usr/local/bin/db-setup.sh
+              permissions: '0755'
+              content: |
+                #!/bin/sh
+                D=$(ls -d /etc/postgresql/*/main | head -1)
+                echo "listen_addresses = '*'" > $D/conf.d/listen.conf
+                echo "host all all 0.0.0.0/0 scram-sha-256" >> $D/pg_hba.conf
+                su postgres -c "psql -c \"ALTER USER postgres PASSWORD 'cambiami'\""
+                systemctl restart postgresql
+            runcmd:
+            - /usr/local/bin/db-setup.sh
+          networkData: |
+            version: 2
+            ethernets:
+              lan0:
+                match:
+                  macaddress: "02:00:00:07:03:01"
+                set-name: lan0
+                addresses: [10.60.0.13/24]
+                routes:
+                - to: 0.0.0.0/0
+                  via: 10.60.0.1
+                nameservers:
+                  addresses: [10.60.0.1]
