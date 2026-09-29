@@ -1,0 +1,325 @@
+# ====================================================================
+# C - VLAN fisiche con Linux bridge (NNCP + NAD + VM solo sulla VLAN)
+#
+# Login nelle VM: utente debian / password cambiami (cambiala).
+# Disco: containerDisk quay.io/containerdisks/debian:13 (effimero: ad ogni stop/restart la VM riparte da immagine pulita e cloud-init riesegue).
+# Applica una sola alternativa alla volta: sono pensate per lo stesso lab e riusano gli stessi nomi (web, app, db).
+# Schema: web=VLAN100 192.168.100.11 | app=VLAN110 192.168.110.12 | db=VLAN120 192.168.120.13 (gateway .1 di ogni VLAN).
+# Il routing e i permessi tra VLAN li fa il firewall fisico: consenti web->app TCP/8080 e app->db TCP/5432.
+# Adatta NIC ('ens224'), VLAN, indirizzi e DNS al tuo ambiente. La NIC NON deve essere quella di br-ex (management).
+# VM senza pod network: usa virtctl console/vnc. Servono nodi con NIC/trunk VLAN reali (non CRC).
+# Senza uscita internet sulle VLAN i pacchetti (nginx, postgresql) non si installano: usa un'immagine con pacchetti o un proxy.
+#
+# Apply   : oc apply -f C-vlan-linux-bridge.yaml
+# Verifica: oc get nncp ; oc get nnce ; oc get net-attach-def -n corso ; oc get vmi -n corso -o wide
+# Cleanup : oc delete -f C-vlan-linux-bridge.yaml
+# ====================================================================
+---
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: br-vm-policy
+spec:
+  nodeSelector:
+    node-role.kubernetes.io/worker: ""
+  desiredState:
+    interfaces:
+    - name: br-vm
+      type: linux-bridge
+      state: up
+      ipv4:
+        enabled: false
+      ipv6:
+        enabled: false
+      bridge:
+        options:
+          stp:
+            enabled: false
+        port:
+        - name: ens224
+          vlan: {}
+---
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: vlan100
+  namespace: corso
+  annotations:
+    k8s.v1.cni.cncf.io/resourceName: bridge.network.kubevirt.io/br-vm
+spec:
+  config: |
+    {"cniVersion":"0.3.1","name":"vlan100","type":"cnv-bridge","bridge":"br-vm","vlan":100,"macspoofchk":true,"ipam":{}}
+---
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: vlan110
+  namespace: corso
+  annotations:
+    k8s.v1.cni.cncf.io/resourceName: bridge.network.kubevirt.io/br-vm
+spec:
+  config: |
+    {"cniVersion":"0.3.1","name":"vlan110","type":"cnv-bridge","bridge":"br-vm","vlan":110,"macspoofchk":true,"ipam":{}}
+---
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: vlan120
+  namespace: corso
+  annotations:
+    k8s.v1.cni.cncf.io/resourceName: bridge.network.kubevirt.io/br-vm
+spec:
+  config: |
+    {"cniVersion":"0.3.1","name":"vlan120","type":"cnv-bridge","bridge":"br-vm","vlan":120,"macspoofchk":true,"ipam":{}}
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: web
+  namespace: corso
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: stack-demo
+        tier: web
+    spec:
+      domain:
+        cpu:
+          cores: 1
+        resources:
+          requests:
+            memory: 1Gi
+        devices:
+          autoattachPodInterface: false
+          disks:
+          - name: rootdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: vlan100
+            bridge: {}
+            model: virtio
+            macAddress: "02:00:00:03:01:01"
+      networks:
+      - name: vlan100
+        multus:
+          networkName: vlan100
+      volumes:
+      - name: rootdisk
+        containerDisk:
+          image: quay.io/containerdisks/debian:13
+          imagePullPolicy: IfNotPresent
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            hostname: web
+            password: cambiami
+            chpasswd: {expire: false}
+            ssh_pwauth: true
+            packages:
+            - nginx
+            write_files:
+            - path: /etc/nginx/conf.d/stack.conf
+              content: |
+                server {
+                  listen 80 default_server;
+                  location / {
+                    proxy_pass http://192.168.110.12:8080;
+                  }
+                }
+            runcmd:
+            - rm -f /etc/nginx/sites-enabled/default
+            - systemctl restart nginx || true
+          networkData: |
+            version: 2
+            ethernets:
+              vlan0:
+                match:
+                  macaddress: "02:00:00:03:01:01"
+                set-name: vlan0
+                addresses: [192.168.100.11/24]
+                routes:
+                - to: 0.0.0.0/0
+                  via: 192.168.100.1
+                nameservers:
+                  addresses: [192.168.100.1]
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: app
+  namespace: corso
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: stack-demo
+        tier: app
+    spec:
+      domain:
+        cpu:
+          cores: 1
+        resources:
+          requests:
+            memory: 1Gi
+        devices:
+          autoattachPodInterface: false
+          disks:
+          - name: rootdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: vlan110
+            bridge: {}
+            model: virtio
+            macAddress: "02:00:00:03:02:01"
+      networks:
+      - name: vlan110
+        multus:
+          networkName: vlan110
+      volumes:
+      - name: rootdisk
+        containerDisk:
+          image: quay.io/containerdisks/debian:13
+          imagePullPolicy: IfNotPresent
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            hostname: app
+            password: cambiami
+            chpasswd: {expire: false}
+            ssh_pwauth: true
+            write_files:
+            - path: /opt/app.py
+              content: |
+                import socket
+                from http.server import BaseHTTPRequestHandler, HTTPServer
+                DB = "192.168.120.13"
+                class H(BaseHTTPRequestHandler):
+                    def do_GET(self):
+                        try:
+                            socket.create_connection((DB, 5432), 2).close()
+                            st = "OK"
+                        except Exception as e:
+                            st = "KO (%s)" % e
+                        body = ("app=%s -> db=%s : %s\n" % (socket.gethostname(), DB, st)).encode()
+                        self.send_response(200)
+                        self.end_headers()
+                        self.wfile.write(body)
+                HTTPServer(("0.0.0.0", 8080), H).serve_forever()
+            - path: /etc/systemd/system/app.service
+              content: |
+                [Unit]
+                Description=Stack demo app
+                After=network-online.target
+                Wants=network-online.target
+                [Service]
+                ExecStart=/usr/bin/python3 /opt/app.py
+                Restart=always
+                [Install]
+                WantedBy=multi-user.target
+            runcmd:
+            - systemctl daemon-reload
+            - systemctl enable --now app.service
+          networkData: |
+            version: 2
+            ethernets:
+              vlan0:
+                match:
+                  macaddress: "02:00:00:03:02:01"
+                set-name: vlan0
+                addresses: [192.168.110.12/24]
+                routes:
+                - to: 0.0.0.0/0
+                  via: 192.168.110.1
+                nameservers:
+                  addresses: [192.168.110.1]
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: db
+  namespace: corso
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: stack-demo
+        tier: db
+    spec:
+      domain:
+        cpu:
+          cores: 1
+        resources:
+          requests:
+            memory: 1Gi
+        devices:
+          autoattachPodInterface: false
+          disks:
+          - name: rootdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: vlan120
+            bridge: {}
+            model: virtio
+            macAddress: "02:00:00:03:03:01"
+      networks:
+      - name: vlan120
+        multus:
+          networkName: vlan120
+      volumes:
+      - name: rootdisk
+        containerDisk:
+          image: quay.io/containerdisks/debian:13
+          imagePullPolicy: IfNotPresent
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            hostname: db
+            password: cambiami
+            chpasswd: {expire: false}
+            ssh_pwauth: true
+            packages:
+            - postgresql
+            write_files:
+            - path: /usr/local/bin/db-setup.sh
+              permissions: '0755'
+              content: |
+                #!/bin/sh
+                D=$(ls -d /etc/postgresql/*/main | head -1)
+                echo "listen_addresses = '*'" > $D/conf.d/listen.conf
+                echo "host all all 0.0.0.0/0 scram-sha-256" >> $D/pg_hba.conf
+                su postgres -c "psql -c \"ALTER USER postgres PASSWORD 'cambiami'\""
+                systemctl restart postgresql
+            runcmd:
+            - /usr/local/bin/db-setup.sh
+          networkData: |
+            version: 2
+            ethernets:
+              vlan0:
+                match:
+                  macaddress: "02:00:00:03:03:01"
+                set-name: vlan0
+                addresses: [192.168.120.13/24]
+                routes:
+                - to: 0.0.0.0/0
+                  via: 192.168.120.1
+                nameservers:
+                  addresses: [192.168.120.1]

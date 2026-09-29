@@ -1,0 +1,383 @@
+# ====================================================================
+# B - Pod network (management/uscita) + UDN secondaria 'backend' (Layer2)
+#
+# Login nelle VM: utente debian / password cambiami (cambiala).
+# Disco: containerDisk quay.io/containerdisks/debian:13 (effimero: ad ogni stop/restart la VM riparte da immagine pulita e cloud-init riesegue).
+# Applica una sola alternativa alla volta: sono pensate per lo stesso lab e riusano gli stessi nomi (web, app, db).
+# Funziona su CRC. Traffico: web -> app sulla pod network (Service), app -> db sulla rete 'backend' (10.50.0.0/24).
+# La UDN e' senza 'subnets' (L2 puro, nessun IPAM): gli IP sono statici via cloud-init.
+# Controlla i campi sulla tua release: oc explain userdefinednetwork.spec.layer2
+# Le NetworkPolicy NON filtrano la rete backend (servirebbe MultiNetworkPolicy).
+#
+# Apply   : oc apply -f B-podnetwork-udn-backend.yaml
+# Verifica: oc get udn -n corso ; oc get net-attach-def -n corso ; oc get vmi -n corso -o wide
+# Test    : nella console di web esegui  curl -s localhost  -> atteso: app=app -> db=...: OK
+# Cleanup : oc delete -f B-podnetwork-udn-backend.yaml
+# ====================================================================
+---
+apiVersion: k8s.ovn.org/v1
+kind: UserDefinedNetwork
+metadata:
+  name: backend
+  namespace: corso
+spec:
+  topology: Layer2
+  layer2:
+    role: Secondary
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stack
+  namespace: corso
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/part-of: stack-demo
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: corso
+spec:
+  selector:
+    tier: web
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app
+  namespace: corso
+spec:
+  selector:
+    tier: app
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: corso
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-web
+  namespace: corso
+spec:
+  podSelector:
+    matchLabels:
+      tier: web
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          network.openshift.io/policy-group: ingress
+    ports:
+    - protocol: TCP
+      port: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-app-from-web
+  namespace: corso
+spec:
+  podSelector:
+    matchLabels:
+      tier: app
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          tier: web
+    ports:
+    - protocol: TCP
+      port: 8080
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: web
+  namespace: corso
+spec:
+  to:
+    kind: Service
+    name: web
+  port:
+    targetPort: http
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: web
+  namespace: corso
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: stack-demo
+        tier: web
+    spec:
+      hostname: web
+      subdomain: stack
+      domain:
+        cpu:
+          cores: 1
+        resources:
+          requests:
+            memory: 1Gi
+        devices:
+          disks:
+          - name: rootdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: default
+            masquerade: {}
+            model: virtio
+            macAddress: "02:00:00:02:01:01"
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - name: rootdisk
+        containerDisk:
+          image: quay.io/containerdisks/debian:13
+          imagePullPolicy: IfNotPresent
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            hostname: web
+            password: cambiami
+            chpasswd: {expire: false}
+            ssh_pwauth: true
+            packages:
+            - nginx
+            write_files:
+            - path: /etc/nginx/conf.d/stack.conf
+              content: |
+                server {
+                  listen 80 default_server;
+                  location / {
+                    proxy_pass http://app:8080;
+                  }
+                }
+            runcmd:
+            - rm -f /etc/nginx/sites-enabled/default
+            - systemctl restart nginx || true
+          networkData: |
+            version: 2
+            ethernets:
+              eth0:
+                match:
+                  macaddress: "02:00:00:02:01:01"
+                set-name: eth0
+                dhcp4: true
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: app
+  namespace: corso
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: stack-demo
+        tier: app
+    spec:
+      hostname: app
+      subdomain: stack
+      domain:
+        cpu:
+          cores: 1
+        resources:
+          requests:
+            memory: 1Gi
+        devices:
+          disks:
+          - name: rootdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: default
+            masquerade: {}
+            model: virtio
+            macAddress: "02:00:00:02:02:01"
+          - name: backend
+            bridge: {}
+            model: virtio
+            macAddress: "02:00:00:02:02:02"
+      networks:
+      - name: default
+        pod: {}
+      - name: backend
+        multus:
+          networkName: backend
+      volumes:
+      - name: rootdisk
+        containerDisk:
+          image: quay.io/containerdisks/debian:13
+          imagePullPolicy: IfNotPresent
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            hostname: app
+            password: cambiami
+            chpasswd: {expire: false}
+            ssh_pwauth: true
+            write_files:
+            - path: /opt/app.py
+              content: |
+                import socket
+                from http.server import BaseHTTPRequestHandler, HTTPServer
+                DB = "10.50.0.12"
+                class H(BaseHTTPRequestHandler):
+                    def do_GET(self):
+                        try:
+                            socket.create_connection((DB, 5432), 2).close()
+                            st = "OK"
+                        except Exception as e:
+                            st = "KO (%s)" % e
+                        body = ("app=%s -> db=%s : %s\n" % (socket.gethostname(), DB, st)).encode()
+                        self.send_response(200)
+                        self.end_headers()
+                        self.wfile.write(body)
+                HTTPServer(("0.0.0.0", 8080), H).serve_forever()
+            - path: /etc/systemd/system/app.service
+              content: |
+                [Unit]
+                Description=Stack demo app
+                After=network-online.target
+                Wants=network-online.target
+                [Service]
+                ExecStart=/usr/bin/python3 /opt/app.py
+                Restart=always
+                [Install]
+                WantedBy=multi-user.target
+            runcmd:
+            - systemctl daemon-reload
+            - systemctl enable --now app.service
+          networkData: |
+            version: 2
+            ethernets:
+              eth0:
+                match:
+                  macaddress: "02:00:00:02:02:01"
+                set-name: eth0
+                dhcp4: true
+              back0:
+                match:
+                  macaddress: "02:00:00:02:02:02"
+                set-name: back0
+                addresses: [10.50.0.11/24]
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: db
+  namespace: corso
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: stack-demo
+        tier: db
+    spec:
+      hostname: db
+      subdomain: stack
+      domain:
+        cpu:
+          cores: 1
+        resources:
+          requests:
+            memory: 1Gi
+        devices:
+          disks:
+          - name: rootdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: default
+            masquerade: {}
+            model: virtio
+            macAddress: "02:00:00:02:03:01"
+          - name: backend
+            bridge: {}
+            model: virtio
+            macAddress: "02:00:00:02:03:02"
+      networks:
+      - name: default
+        pod: {}
+      - name: backend
+        multus:
+          networkName: backend
+      volumes:
+      - name: rootdisk
+        containerDisk:
+          image: quay.io/containerdisks/debian:13
+          imagePullPolicy: IfNotPresent
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            hostname: db
+            password: cambiami
+            chpasswd: {expire: false}
+            ssh_pwauth: true
+            packages:
+            - postgresql
+            write_files:
+            - path: /usr/local/bin/db-setup.sh
+              permissions: '0755'
+              content: |
+                #!/bin/sh
+                D=$(ls -d /etc/postgresql/*/main | head -1)
+                echo "listen_addresses = '*'" > $D/conf.d/listen.conf
+                echo "host all all 0.0.0.0/0 scram-sha-256" >> $D/pg_hba.conf
+                su postgres -c "psql -c \"ALTER USER postgres PASSWORD 'cambiami'\""
+                systemctl restart postgresql
+            runcmd:
+            - /usr/local/bin/db-setup.sh
+          networkData: |
+            version: 2
+            ethernets:
+              eth0:
+                match:
+                  macaddress: "02:00:00:02:03:01"
+                set-name: eth0
+                dhcp4: true
+              back0:
+                match:
+                  macaddress: "02:00:00:02:03:02"
+                set-name: back0
+                addresses: [10.50.0.12/24]
