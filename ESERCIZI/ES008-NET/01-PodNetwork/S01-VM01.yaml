@@ -1,0 +1,72 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: web
+  namespace: corso
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: stack-demo
+        tier: web
+    spec:
+      hostname: web
+      subdomain: stack
+      domain:
+        cpu:
+          cores: 1
+        resources:
+          requests:
+            memory: 1Gi
+        devices:
+          disks:
+          - name: rootdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: default
+            masquerade: {}
+            model: virtio
+            macAddress: "02:00:00:01:01:01"
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - name: rootdisk
+        containerDisk:
+          image: quay.io/containerdisks/debian:13
+          imagePullPolicy: IfNotPresent
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |-
+            #cloud-config
+            hostname: web
+            password: Corso2026
+            chpasswd: {expire: false}
+            ssh_pwauth: true
+            packages:
+            - nginx
+            write_files:
+            - path: /etc/nginx/conf.d/stack.conf
+              content: |
+                server {
+                  listen 80 default_server;
+                  location / {
+                    proxy_pass http://app:8080;
+                  }
+                }
+            runcmd:
+            - rm -f /etc/nginx/sites-enabled/default
+            - systemctl restart nginx || true
+        networkData: |-
+          version: 2
+          ethernets:
+            eth0:
+              dhcp4: true
+              set-name: eth0
+              match:
+                macaddress: "02:00:00:01:01:01"
