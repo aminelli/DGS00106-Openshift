@@ -47,7 +47,7 @@ spec:
             hostname: web
             password: Corso2026
             chpasswd: {expire: false}
-            ssh_pwauth: true
+            #ssh_pwauth: true
             packages:
             - nginx
             write_files:

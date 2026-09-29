@@ -1,0 +1,90 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: app
+  namespace: corso
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: stack-demo
+        tier: app
+    spec:
+      hostname: app
+      subdomain: stack
+      domain:
+        cpu:
+          cores: 1
+        resources:
+          requests:
+            memory: 1Gi
+        devices:
+          disks:
+          - name: rootdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: default
+            masquerade: {}
+            model: virtio
+            macAddress: "02:00:00:01:02:01"
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - name: rootdisk
+        containerDisk:
+          image: quay.io/containerdisks/debian:13
+          imagePullPolicy: IfNotPresent
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |-
+            #cloud-config
+            hostname: app
+            password: Corso2026
+            chpasswd: {expire: false}
+            #ssh_pwauth: true
+            write_files:
+            - path: /opt/app.py
+              content: |
+                import socket
+                from http.server import BaseHTTPRequestHandler, HTTPServer
+                DB = "db"
+                class H(BaseHTTPRequestHandler):
+                    def do_GET(self):
+                        try:
+                            socket.create_connection((DB, 5432), 2).close()
+                            st = "OK"
+                        except Exception as e:
+                            st = "KO (%s)" % e
+                        body = ("app=%s -> db=%s : %s\n" % (socket.gethostname(), DB, st)).encode()
+                        self.send_response(200)
+                        self.end_headers()
+                        self.wfile.write(body)
+                HTTPServer(("0.0.0.0", 8080), H).serve_forever()
+            - path: /etc/systemd/system/app.service
+              content: |
+                [Unit]
+                Description=Stack demo app
+                After=network-online.target
+                Wants=network-online.target
+                [Service]
+                ExecStart=/usr/bin/python3 /opt/app.py
+                Restart=always
+                [Install]
+                WantedBy=multi-user.target
+            runcmd:
+            - systemctl daemon-reload
+            - systemctl enable --now app.service        
+        networkData: |-
+          version: 2
+          ethernets:
+            eth0:
+              dhcp4: true
+              set-name: eth0
+              match:
+                macaddress: "02:00:00:01:02:01"
