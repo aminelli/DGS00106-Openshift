@@ -1,0 +1,72 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: db
+  namespace: corso
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: stack-demo
+        tier: db
+    spec:
+      hostname: db
+      subdomain: stack
+      domain:
+        cpu:
+          cores: 1
+        resources:
+          requests:
+            memory: 1Gi
+        devices:
+          disks:
+          - name: rootdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: default
+            masquerade: {}
+            model: virtio
+            macAddress: "02:00:00:01:03:01"
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - name: rootdisk
+        containerDisk:
+          image: quay.io/containerdisks/debian:13
+          imagePullPolicy: IfNotPresent
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |-
+            #cloud-config
+            hostname: db
+            password: Corso2026
+            chpasswd: {expire: false}
+            #ssh_pwauth: true
+            packages:
+            - postgresql
+            write_files:
+            - path: /usr/local/bin/db-setup.sh
+              permissions: '0755'
+              content: |
+                #!/bin/sh
+                D=$(ls -d /etc/postgresql/*/main | head -1)
+                echo "listen_addresses = '*'" > $D/conf.d/listen.conf
+                echo "host all all 0.0.0.0/0 scram-sha-256" >> $D/pg_hba.conf
+                su postgres -c "psql -c \"ALTER USER postgres PASSWORD 'Corso2026'\""
+                systemctl restart postgresql
+            runcmd:
+            - /usr/local/bin/db-setup.sh            
+        networkData: |-
+          version: 2
+          ethernets:
+            eth0:
+              dhcp4: true
+              set-name: eth0
+              match:
+                macaddress: "02:00:00:01:03:01"
